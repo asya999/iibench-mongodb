@@ -1,6 +1,8 @@
 #!/bin/bash
 
-# simple script to run against running MongoDB/TokuMX server localhost:(default port)
+export CLASSPATH=`pwd`/mongo-java-driver-3.1.1.jar
+
+# simple script to run against running MongoDB server localhost:(default port)
 
 # if running TokuMX, need to select compression for collection and secondary indexes (zlib is default)
 #   valid values : lzma, quicklz, zlib, none
@@ -36,8 +38,8 @@ export NUM_LOADER_THREADS=1
 export DB_NAME=iibench
 
 # write concern for the benchmark client
-#   valid values : FSYNC_SAFE, NONE, NORMAL, REPLICAS_SAFE, SAFE
-export WRITE_CONCERN=SAFE
+#   valid values : JOURNALED, ACKNOWLEDGED, UNACKNOWLEDGED, REPLICAS_ACKNOWLEDGED, MAJORITY
+export WRITE_CONCERN=ACKNOWLEDGED
 
 # name of the server to connect to
 export MONGO_SERVER=localhost
@@ -61,7 +63,7 @@ export NUM_CHAR_FIELDS=1
 #   valid values : integer >= 0
 export LENGTH_CHAR_FIELDS=1000
 
-# percentage of highly compressible data (repeated character "a") in character field
+# percentage of highly compressible data (repeated character) in character field
 #   valid values : integer >= 0 and <= 100
 export PERCENT_COMPRESSIBLE=90
 
@@ -77,11 +79,11 @@ export QUERIES_PER_INTERVAL=0
 
 # number of seconds during which to perform QUERIES_PER_INTERVAL queries
 #   valid values : integer > 0
-export QUERY_INTERVAL_SECONDS=15
+export QUERY_INTERVAL_SECONDS=1
 
 # number of documents to return per query
 #   valid values : integer > 0
-export QUERY_LIMIT=10
+export QUERY_LIMIT=1
 
 # wait this many inserts to begin the query workload
 #   valid values : integer > 0
@@ -92,10 +94,9 @@ export QUERY_NUM_DOCS_BEGIN=1000000
 export CREATE_COLLECTION=Y
 
 
-javac -cp $CLASSPATH:$PWD/src src/jmongoiibench.java
+javac -Xlint -cp $CLASSPATH:$PWD/src src/jmongoiibench.java
 
-
-export LOG_NAME=mongoiibench-${MAX_ROWS}-${NUM_DOCUMENTS_PER_INSERT}-${MAX_INSERTS_PER_SECOND}-${NUM_LOADER_THREADS}-${QUERIES_PER_INTERVAL}-${QUERY_INTERVAL_SECONDS}.txt
+export LOG_NAME=mongoiibench-${MAX_ROWS}-${NUM_DOCUMENTS_PER_INSERT}-${MAX_INSERTS_PER_SECOND}-${NUM_LOADER_THREADS}-${QUERIES_PER_INTERVAL}.txt
 export BENCHMARK_TSV=${LOG_NAME}.tsv
     
 rm -f $LOG_NAME

@@ -1,18 +1,22 @@
 //import com.mongodb.Mongo;
 import com.mongodb.MongoClient;
+import com.mongodb.MongoClientURI;
 import com.mongodb.MongoClientOptions;
-import com.mongodb.DB;
-import com.mongodb.DBCollection;
-import com.mongodb.DBCursor;
-import com.mongodb.BasicDBObject;
-import com.mongodb.DBObject;
-import com.mongodb.DBCursor;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
+import org.bson.Document;
+import org.bson.BsonDateTime;
+import org.bson.conversions.Bson;
+import static com.mongodb.client.model.Projections.*;
+
 import com.mongodb.ServerAddress;
 import com.mongodb.WriteConcern;
 import com.mongodb.CommandResult;
 
 import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Date;
 import java.util.Properties;
 import java.io.BufferedWriter;
@@ -43,6 +47,8 @@ public class jmongoiibench {
     public static double maxPrice = 500.0;
 
     public static String dbName;
+    public static final String collectionName = "purchases_index";
+            
     public static int writerThreads;
     public static Integer numMaxInserts;
     public static int documentsPerInsert;
@@ -84,7 +90,7 @@ public class jmongoiibench {
 
     public static void main (String[] args) throws Exception {
         if (args.length != 23) {
-            logMe("*** ERROR : CONFIGURATION ISSUE ***");
+            logMe("*** ERROR : CONFIGURATION ISSUE ***" + args.length + " " + args);
             logMe("jmongoiibench [database name] [number of writer threads] [documents per collection] [documents per insert] [inserts feedback] [seconds feedback] [log file name] [compression type] [basement node size (bytes)] [number of seconds to run] [queries per interval] [interval (seconds)] [query limit] [inserts for begin query] [max inserts per second] [writeconcern] [server] [port] [num char fields] [length char fields] [num secondary indexes] [percent compressible] [create collection]");
             System.exit(1);
         }
@@ -116,20 +122,20 @@ public class jmongoiibench {
         maxThreadInsertsPerSecond = (maxInsertsPerSecond / writerThreads);
         
         WriteConcern myWC = new WriteConcern();
-        if (myWriteConcern.toLowerCase().equals("fsync_safe")) {
-            myWC = WriteConcern.FSYNC_SAFE;
+        if (myWriteConcern.toLowerCase().equals("journaled")) {
+            myWC = WriteConcern.JOURNALED;
         }
-        else if ((myWriteConcern.toLowerCase().equals("none"))) {
-            myWC = WriteConcern.NONE;
+        else if ((myWriteConcern.toLowerCase().equals("unacknowledged"))) {
+            myWC = WriteConcern.UNACKNOWLEDGED;
         }
-        else if ((myWriteConcern.toLowerCase().equals("normal"))) {
-            myWC = WriteConcern.NORMAL;
+        else if ((myWriteConcern.toLowerCase().equals("acknowledged"))) {
+            myWC = WriteConcern.ACKNOWLEDGED;
         }
-        else if ((myWriteConcern.toLowerCase().equals("replicas_safe"))) {
-            myWC = WriteConcern.REPLICAS_SAFE;
+        else if ((myWriteConcern.toLowerCase().equals("replica_acknowledged"))) {
+            myWC = WriteConcern.REPLICA_ACKNOWLEDGED;
         }
-        else if ((myWriteConcern.toLowerCase().equals("safe"))) {
-            myWC = WriteConcern.SAFE;
+        else if ((myWriteConcern.toLowerCase().equals("majority"))) {
+            myWC = WriteConcern.MAJORITY;
         } 
         else {
             logMe("*** ERROR : WRITE CONCERN ISSUE ***");
@@ -192,28 +198,17 @@ public class jmongoiibench {
         logMe("  write concern = %s",myWriteConcern);
         logMe("  Server:Port = %s:%d",serverName,serverPort);
         
-        MongoClientOptions clientOptions = new MongoClientOptions.Builder().connectionsPerHost(2048).socketTimeout(60000).writeConcern(myWC).build();
+        MongoClientOptions clientOptions = MongoClientOptions.builder().writeConcern(myWC).build();
         ServerAddress srvrAdd = new ServerAddress(serverName,serverPort);
         MongoClient m = new MongoClient(srvrAdd, clientOptions);
         
-        logMe("mongoOptions | " + m.getMongoOptions().toString());
+        /* logMe("mongoOptions | " + m.getMongoOptions().toString()); */
         logMe("mongoWriteConcern | " + m.getWriteConcern().toString());
         
-        DB db = m.getDB(dbName);
+        MongoDatabase db = m.getDatabase(dbName);
         
-        // determine server type : mongo or tokumx
-        DBObject checkServerCmd = new BasicDBObject();
-        CommandResult commandResult = db.command("buildInfo");
-        
-        // check if tokumxVersion exists, otherwise assume mongo
-        if (commandResult.toString().contains("tokumxVersion")) {
-            indexTechnology = "tokumx";
-        }
-        else
-        {
-            indexTechnology = "mongo";
-        }
-        
+        indexTechnology = "mongo";
+
         if ((!indexTechnology.toLowerCase().equals("tokumx")) && (!indexTechnology.toLowerCase().equals("mongo"))) {
             // unknown index technology, abort
             logMe(" *** Unknown Indexing Technology %s, shutting down",indexTechnology);
@@ -239,51 +234,27 @@ public class jmongoiibench {
             e.printStackTrace();
         }
 
+        MongoCollection<Document> coll = db.getCollection(collectionName);
+        coll.drop();
+
         if (createCollection.equals("n"))
         {
-            logMe("Skipping collection creation");
+            logMe("Skipping collection/index creation");
         }
         else
         {
             // create the collection
-            String collectionName = "purchases_index";
-    
-            if (indexTechnology.toLowerCase().equals("tokumx")) {
-                DBObject cmd = new BasicDBObject();
-                cmd.put("create", collectionName);
-                cmd.put("compression", compressionType);
-                cmd.put("readPageSize", basementSize);
-                CommandResult result = db.command(cmd);
-                //logMe(result.toString());
-            } else if (indexTechnology.toLowerCase().equals("mongo")) {
-                // nothing special to do for a regular mongo collection
-            } else {
-                // unknown index technology, abort
-                logMe(" *** Unknown Indexing Technology %s, shutting down",indexTechnology);
-                System.exit(1);
-            }
-
-            DBCollection coll = db.getCollection(collectionName);
-    
-            BasicDBObject idxOptions = new BasicDBObject();
-            idxOptions.put("background",false);
-    
-            if (indexTechnology.toLowerCase().equals("tokumx")) {
-                idxOptions.put("compression",compressionType);
-                idxOptions.put("readPageSize",basementSize);
-            }
-    
             if (numSecondaryIndexes >= 1) {
-                logMe(" *** creating secondary index on price + customerid");
-                coll.ensureIndex(new BasicDBObject("price", 1).append("customerid", 1), idxOptions);
+                logMe(" *** creating secondary index on customerid + dateandtime");
+                coll.createIndex(new Document("customerid", 1).append("dateandtime", 1));
             }
             if (numSecondaryIndexes >= 2) {
                 logMe(" *** creating secondary index on cashregisterid + price + customerid");
-                coll.ensureIndex(new BasicDBObject("cashregisterid", 1).append("price", 1).append("customerid", 1), idxOptions);
+                coll.createIndex(new Document("cashregisterid", 1).append("price", 1).append("_id", 1));
             }
             if (numSecondaryIndexes >= 3) {
-                logMe(" *** creating secondary index on price + dateandtime + customerid");
-                coll.ensureIndex(new BasicDBObject("price", 1).append("dateandtime", 1).append("customerid", 1), idxOptions);
+                logMe(" *** creating secondary index on price + dateandtime + price");
+                coll.createIndex(new Document("productid", 1).append("dateandtime", 1).append("price", 1));
             }
             // END: create the collection
         }
@@ -354,8 +325,6 @@ public class jmongoiibench {
             e.printStackTrace();
         }
         
-        // m.dropDatabase("mydb");
-
         m.close();
         
         logMe("Done!");
@@ -366,11 +335,11 @@ public class jmongoiibench {
         int threadNumber; 
         int numMaxInserts;
         int maxInsertsPerSecond;
-        DB db;
+        MongoDatabase db;
         
         java.util.Random rand;
         
-        MyWriter(int threadCount, int threadNumber, int numMaxInserts, DB db, int maxInsertsPerSecond) {
+        MyWriter(int threadCount, int threadNumber, int numMaxInserts, MongoDatabase db, int maxInsertsPerSecond) {
             this.threadCount = threadCount;
             this.threadNumber = threadNumber;
             this.numMaxInserts = numMaxInserts;
@@ -379,8 +348,7 @@ public class jmongoiibench {
             rand = new java.util.Random((long) threadNumber);
         }
         public void run() {
-            String collectionName = "purchases_index";
-            DBCollection coll = db.getCollection(collectionName);
+            MongoCollection<Document> coll = db.getCollection(collectionName);
         
             long numInserts = 0;
             long numLastInserts = 0;
@@ -390,7 +358,7 @@ public class jmongoiibench {
             try {
                 logMe("Writer thread %d : started to load collection %s",threadNumber, collectionName);
 
-                BasicDBObject[] aDocs = new BasicDBObject[documentsPerInsert];
+                List<Document> aDocs = new ArrayList<Document>(documentsPerInsert);
                 
                 int numRounds = numMaxInserts / documentsPerInsert;
                 
@@ -412,9 +380,9 @@ public class jmongoiibench {
                         //id++;
                         int thisCustomerId = rand.nextInt(numCustomers);
                         double thisPrice= ((rand.nextDouble() * maxPrice) + (double) thisCustomerId) / 100.0;
-                        BasicDBObject doc = new BasicDBObject();
+                        Document doc = new Document();
                         //doc.put("_id",id);
-                        doc.put("dateandtime", System.currentTimeMillis());
+                        doc.put("dateandtime", new BsonDateTime(System.currentTimeMillis()));
                         doc.put("cashregisterid", rand.nextInt(numCashRegisters));
                         doc.put("customerid", thisCustomerId);
                         doc.put("productid", rand.nextInt(numProducts));
@@ -423,14 +391,14 @@ public class jmongoiibench {
                             int startPosition = rand.nextInt(randomStringLength-lengthCharFields);
                             doc.put("cf"+Integer.toString(charField), randomStringHolder.substring(startPosition,startPosition+numUncompressibleCharacters) + compressibleStringHolder.substring(startPosition,startPosition+numCompressibleCharacters));
                         }
-                        aDocs[i]=doc;
+                        aDocs.add(doc);
                     }
 
                     try {
-                        coll.insert(aDocs);
+                        coll.insertMany(aDocs);
                         numInserts += documentsPerInsert;
                         globalInserts.addAndGet(documentsPerInsert);
-                        
+                        aDocs.clear(); 
                     } catch (Exception e) {
                         logMe("Writer thread %d : EXCEPTION",threadNumber);
                         e.printStackTrace();
@@ -457,11 +425,11 @@ public class jmongoiibench {
         int threadCount; 
         int threadNumber; 
         int numMaxInserts;
-        DB db;
+        MongoDatabase db;
 
         java.util.Random rand;
         
-        MyQuery(int threadCount, int threadNumber, int numMaxInserts, DB db) {
+        MyQuery(int threadCount, int threadNumber, int numMaxInserts, MongoDatabase db) {
             this.threadCount = threadCount;
             this.threadNumber = threadNumber;
             this.numMaxInserts = numMaxInserts;
@@ -475,9 +443,7 @@ public class jmongoiibench {
             boolean outputWaiting = true;
             boolean outputStarted = true;
             
-            String collectionName = "purchases_index";
-            
-            DBCollection coll = db.getCollection(collectionName);
+            MongoCollection<Document> coll = db.getCollection(collectionName);
         
             long numQueriesExecuted = 0;
             long numQueriesTimeMs = 0;
@@ -521,161 +487,94 @@ public class jmongoiibench {
                             int thisProductId = rand.nextInt(numProducts);
                             long thisRandomTime = t0 + (long) ((double) (thisNow - t0) * rand.nextDouble());
                             
-                            BasicDBObject query = new BasicDBObject();
-                            BasicDBObject keys = new BasicDBObject();
+                            Document query = new Document();
+                            Bson keys = excludeId();
 
-                            // query <NOT RUNNING>
-                            // *** WE ARE NOT CURRENTLY RUNNING THIS QUERY, THE _id VALUES ARE AUTO-GENERATED ***
-                            /*
-                            def generate_pk_query(row_count, start_time):
-                              if FLAGS.with_max_table_rows and row_count > FLAGS.max_table_rows :
-                                pk_txid = row_count - FLAGS.max_table_rows + random.randrange(FLAGS.max_table_rows)
-                              else:
-                                pk_txid = random.randrange(max(row_count,1))
-                            
-                              sql = 'SELECT transactionid FROM %s WHERE '\
-                                    '(transactionid >= %d) LIMIT %d' % (
-                                  FLAGS.table_name, pk_txid, FLAGS.rows_per_query)
-                              return sql
-                            */
-                            
                             if (whichQuery == 1) {
-                                // query 1
-                                /*
-                                def generate_pdc_query(row_count, start_time):
-                                  customerid = random.randrange(0, FLAGS.customers)
-                                  price = ((random.random() * FLAGS.max_price) + customerid) / 100.0
                                 
-                                  random_time = ((time.time() - start_time) * random.random()) + start_time
-                                  when = random_time + (random.randrange(max(row_count,1)) / 100000.0)
-                                  datetime = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(when))
-                                
-                                  sql = 'SELECT price,dateandtime,customerid FROM %s FORCE INDEX (pdc) WHERE '\
-                                        '(price=%.2f and dateandtime="%s" and customerid>=%d) OR '\
-                                        '(price=%.2f and dateandtime>"%s") OR '\
-                                        '(price>%.2f) LIMIT %d' % (FLAGS.table_name, price,
-                                                                   datetime, customerid,
-                                                                   price, datetime, price,
-                                                                   FLAGS.rows_per_query)
-                                  return sql
-                                  
-    db.purchases_index.find({$or: [ {price: <price>, dateandtime: <dateandtime>, customerid: {$gte: <customerid>}},
-                                    {price: <price>, dateandtime: {$gt: <dateandtime>}},
-                                    {price: {$gt: <price>}} ]}, 
-                            {price:1, dateandtime:1, customerid:1, _id:0}).limit(1000);
-                                */
-                                
-                                BasicDBObject query1a = new BasicDBObject();
+      /*  db.purchases_index.find(
+         new Document().parse({$or: [ {price: <price>, dateandtime: <dateandtime>, customerid: {$gte: <customerid>}},
+                        {price: <price>, dateandtime: {$gt: <dateandtime>}},
+                        {price: {$gt: <price>}} ]}),
+         new Document().parse({price:1, dateandtime:1, customerid:1, _id:0})).limit(1000);
+     */
+                                Document query1a = new Document();
                                 query1a.put("price", thisPrice);
                                 query1a.put("dateandtime", thisRandomTime);
-                                query1a.put("customerid", new BasicDBObject("$gte", thisCustomerId));
+                                query1a.put("customerid", new Document("$gte", thisCustomerId));
                                 
-                                BasicDBObject query1b = new BasicDBObject();
+                                Document query1b = new Document();
                                 query1b.put("price", thisPrice);
-                                query1b.put("dateandtime", new BasicDBObject("$gt", thisRandomTime));
+                                query1b.put("dateandtime", new Document("$gt", thisRandomTime));
                                 
-                                BasicDBObject query1c = new BasicDBObject();
-                                query1c.put("price", new BasicDBObject("$gt", thisPrice));
+                                Document query1c = new Document();
+                                query1c.put("price", new Document("$gt", thisPrice));
                                 
-                                ArrayList<BasicDBObject> list1 = new ArrayList<BasicDBObject>();
+                                ArrayList<Document> list1 = new ArrayList<Document>();
                                 list1.add(query1a);
                                 list1.add(query1b);
                                 list1.add(query1c);
                                 
                                 query.put("$or", list1);
                                 
-                                keys.put("price",1);
-                                keys.put("dateandtime",1);
-                                keys.put("customerid",1);
-                                keys.put("_id",0);
+                                keys = fields(include("price","dateandtime","customerid"),excludeId());
                                 
                             } else if (whichQuery == 2) {
-                                // query 2
-                                /*
-                                def generate_market_query(row_count, start_time):
-                                  customerid = random.randrange(0, FLAGS.customers)
-                                  price = ((random.random() * FLAGS.max_price) + customerid) / 100.0
+      /* db.purchases_index.find({$or: [ {price: <price>, customerid: {$gte: <customerid>} },
+                           {price: {$gt: <price>}} ]}, 
+                      {price:1, customerid:1, _id:0}).limit(1000);
+      */
                                 
-                                  sql = 'SELECT price,customerid FROM %s FORCE INDEX (marketsegment) WHERE '\
-                                        '(price=%.2f and customerid>=%d) OR '\
-                                        '(price>%.2f) LIMIT %d' % (
-                                      FLAGS.table_name, price, customerid, price, FLAGS.rows_per_query)
-                                  return sql
-    
-    db.purchases_index.find({$or: [ {price: <price>, customerid: {$gte: <customerid>} },
-                                    {price: {$gt: <price>}} ]}, 
-                            {price:1, customerid:1, _id:0}).limit(1000);
-                                */
-                                
-                                BasicDBObject query2a = new BasicDBObject();
+                                Document query2a = new Document();
                                 query2a.put("price", thisPrice);
-                                query2a.put("customerid", new BasicDBObject("$gte", thisCustomerId));
+                                query2a.put("customerid", new Document("$gte", thisCustomerId));
                                 
-                                BasicDBObject query2b = new BasicDBObject();
-                                query2b.put("price", new BasicDBObject("$gt", thisPrice));
+                                Document query2b = new Document();
+                                query2b.put("price", new Document("$gt", thisPrice));
                                 
-                                ArrayList<BasicDBObject> list2 = new ArrayList<BasicDBObject>();
+                                ArrayList<Document> list2 = new ArrayList<Document>();
                                 list2.add(query2a);
                                 list2.add(query2b);
                                 
                                 query.put("$or", list2);
                                 
-                                keys.put("price",1);
-                                keys.put("customerid",1);
-                                keys.put("_id",0);
+                                keys = fields(include("price","customerid"),excludeId());
                                 
                             } else if (whichQuery == 3) {
                                 // query 3
-                                /*
-                                def generate_register_query(row_count, start_time):
-                                  customerid = random.randrange(0, FLAGS.customers)
-                                  price = ((random.random() * FLAGS.max_price) + customerid) / 100.0
-                                  cashregisterid = random.randrange(0, FLAGS.cashregisters)
-                                
-                                  sql = 'SELECT cashregisterid,price,customerid FROM %s '\
-                                        'FORCE INDEX (registersegment) WHERE '\
-                                        '(cashregisterid=%d and price=%.2f and customerid>=%d) OR '\
-                                        '(cashregisterid=%d and price>%.2f) OR '\
-                                        '(cashregisterid>%d) LIMIT %d' % (
-                                      FLAGS.table_name, cashregisterid, price, customerid,
-                                      cashregisterid, price, cashregisterid, FLAGS.rows_per_query)
-                                  return sql                        
-                                  
+              /*
     db.purchases_index.find({$or: [ {cashregisterid: <cashregisterid>, price: <price>, customerid: {$gte: <customerid>} },
                                     {cashregisterid: <cashregisterid>, price: {$gt: <price>}},
                                     {cashregisterid: {$gt: <cashregisterid>}} ]}, 
                             {cashregisterid:1, price:1, customerid:1, _id:0}).limit(1000);;
-                                */
+              */
                                 
-                                BasicDBObject query3a = new BasicDBObject();
+                                Document query3a = new Document();
                                 query3a.put("cashregisterid", thisCashRegisterId);
                                 query3a.put("price", thisPrice);
-                                query3a.put("customerid", new BasicDBObject("$gte", thisCustomerId));
+                                query3a.put("customerid", new Document("$gte", thisCustomerId));
                                 
-                                BasicDBObject query3b = new BasicDBObject();
+                                Document query3b = new Document();
                                 query3b.put("cashregisterid", thisCashRegisterId);
-                                query3b.put("price", new BasicDBObject("$gt", thisPrice));
+                                query3b.put("price", new Document("$gt", thisPrice));
                                 
-                                BasicDBObject query3c = new BasicDBObject();
-                                query3c.put("cashregisterid", new BasicDBObject("$gt", thisCashRegisterId));
+                                Document query3c = new Document();
+                                query3c.put("cashregisterid", new Document("$gt", thisCashRegisterId));
                                 
-                                ArrayList<BasicDBObject> list3 = new ArrayList<BasicDBObject>();
+                                ArrayList<Document> list3 = new ArrayList<Document>();
                                 list3.add(query3a);
                                 list3.add(query3b);
                                 list3.add(query3c);
                                 
                                 query.put("$or", list3);
                                 
-                                keys.put("cashregisterid",1);
-                                keys.put("price",1);
-                                keys.put("customerid",1);
-                                keys.put("_id",0);
+                                keys = fields(include("price","cashregisterid","customerid"),excludeId());
                                 
                             }
                             
                             //logMe("Executed query %d",whichQuery);
                             long now = System.currentTimeMillis();
-                            DBCursor cursor = coll.find(query,keys).limit(queryLimit);
+                            MongoCursor<Document> cursor = coll.find(query).projection(keys).limit(queryLimit).iterator();
                             try {
                                 while(cursor.hasNext()) {
                                     //System.out.println(cursor.next());
